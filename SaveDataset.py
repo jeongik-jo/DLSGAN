@@ -2,7 +2,7 @@ import os
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 import tensorflow as tf
 
-folder_path = r'D:\FFHQ\train'
+folder_path = r'D:\Datasets\FFHQ_train'
 dataset_name = 'FFHQ_train'
 resize_image = True
 if resize_image:
@@ -12,7 +12,7 @@ for root, dirs, files in os.walk(folder_path):
     for file in files:
         sample_paths.append(os.path.join(root, file))
 
-sample_per_tfr = 10000
+sample_per_tfr = 5000
 num_tfr = len(sample_paths) // sample_per_tfr
 if len(sample_paths) % sample_per_tfr != 0:
     num_tfr += 1
@@ -21,7 +21,7 @@ if len(sample_paths) % sample_per_tfr != 0:
 def image_feature(value):
     """Returns a bytes_list from a string / byte."""
     return tf.train.Feature(
-        bytes_list=tf.train.BytesList(value=[tf.io.encode_jpeg(value).numpy()])
+        bytes_list=tf.train.BytesList(value=[tf.io.encode_png(value).numpy()])
     )
 
 
@@ -60,7 +60,7 @@ for i_tfr in range(num_tfr):
     with tf.io.TFRecordWriter("dataset/" + dataset_name + "_%03d.tfrec" % i_tfr) as writer:
         temp_sample_paths = sample_paths[i_tfr*sample_per_tfr:(i_tfr+1)*sample_per_tfr]
         for sample_path in temp_sample_paths:
-            image = tf.io.decode_jpeg(tf.io.read_file(sample_path))
+            image = tf.io.decode_png(tf.io.read_file(sample_path))
             if resize_image:
                 image = tf.cast(tf.round(tf.image.resize(tf.cast(image, 'float32'), resolution)), 'uint8')
             example = create_example(image)

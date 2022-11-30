@@ -1,44 +1,32 @@
-import tensorflow.keras as kr
+from tensorflow import keras as kr
 import tensorflow as tf
 import tensorflow_probability as tfp
 import HyperParameters as hp
 from scipy.linalg import sqrtm
 import numpy as np
-import Dataset
 
 inception_model = tf.keras.applications.InceptionV3(weights='imagenet', pooling='avg', include_top=False)
 
 
 @tf.function
-def _get_feature_samples(generator: kr.Model, real_images, latent_scale_vector):
-    real_images = Dataset.resize_and_normalize(real_images)
-
+def _get_batch_results(discriminator: kr.Model, generator: kr.Model, latent_scale_vector, real_images):
     batch_size = real_images.shape[0]
-    latent_vectors = hp.latent_dist_func([batch_size, hp.latent_vector_dim])
+    latent_vectors = hp.latent_dist_func(batch_size)
+    fake_images = tf.clip_by_value(generator(latent_vectors * latent_scale_vector[tf.newaxis]), clip_value_min=-1, clip_value_max=1)
 
-    fake_images = tf.clip_by_value(generator(latent_vectors * latent_scale_vector, training=False), clip_value_min=-1, clip_value_max=1)
-    fake_images = tf.image.resize(fake_images, [299, 299])
-    real_images = tf.image.resize(real_images, [299, 299])
+    real_rec_images = tf.clip_by_value(generator(discriminator(real_images)[1] * latent_scale_vector[tf.newaxis]), clip_value_min=-1, clip_value_max=1)
+    fake_rec_images = tf.clip_by_value(generator(discriminator(fake_images)[1] * latent_scale_vector[tf.newaxis]), clip_value_min=-1, clip_value_max=1)
 
-    real_features = inception_model(real_images, training=False)
-    fake_features = inception_model(fake_images, training=False)
+    real_features = inception_model(tf.image.resize(real_images, [299, 299]))
+    fake_features = inception_model(tf.image.resize(fake_images, [299, 299]))
 
-    return real_features, fake_features
+    real_psnrs = tf.image.psnr(real_images, real_rec_images, max_val=2.0)
+    real_ssims = tf.image.ssim(real_images, real_rec_images, max_val=2.0)
+    fake_psnrs = tf.image.psnr(fake_images, fake_rec_images, max_val=2.0)
+    fake_ssims = tf.image.ssim(fake_images, fake_rec_images, max_val=2.0)
 
-
-def _get_features(generator: kr.Model, test_dataset: tf.data.Dataset, latent_scale_vector):
-    real_features = []
-    fake_features = []
-
-    for real_images in test_dataset:
-        real_features_batch, fake_features_batch = _get_feature_samples(generator, real_images, latent_scale_vector)
-        real_features.append(real_features_batch)
-        fake_features.append(fake_features_batch)
-
-    real_features = tf.concat(real_features, axis=0)
-    fake_features = tf.concat(fake_features, axis=0)
-
-    return real_features, fake_features
+    return {'real_psnrs': real_psnrs, 'real_ssims': real_ssims, 'fake_psnrs': fake_psnrs, 'fake_ssims': fake_ssims,
+            'real_features': real_features, 'fake_features': fake_features}
 
 
 def _pairwise_distances(U, V):
@@ -80,48 +68,42 @@ def _get_pr(ref_features, eval_features, nhood_size=3):
     return tf.reduce_mean(tf.cast(tf.math.reduce_any(distance_pairs <= thresholds, axis=1), 'float32'))
 
 
-def get_fid_pr(generator: kr.Model, test_dataset: tf.data.Dataset, latent_scale_vector):
-    real_features, fake_features = _get_features(generator, test_dataset, latent_scale_vector)
+def evaluate(discriminator: kr.Model, generator: kr.Model, latent_var_trace: tf.Tensor, test_dataset: tf.data.Dataset):
+    latent_scale_vector = tf.sqrt(tf.cast(hp.latent_vector_dim, 'float32') * latent_var_trace / tf.reduce_sum(latent_var_trace))
+    results = {}
+    for real_images in test_dataset:
+        batch_results = _get_batch_results(discriminator, generator, latent_scale_vector, real_images)
+        for key in batch_results:
+            try:
+                results[key].append(batch_results[key])
+            except KeyError:
+                results[key] = [batch_results[key]]
+
+    real_psnr = tf.reduce_mean(results['real_psnrs'])
+    real_ssim = tf.reduce_mean(results['real_ssims'])
+    fake_psnr = tf.reduce_mean(results['fake_psnrs'])
+    fake_ssim = tf.reduce_mean(results['fake_ssims'])
+
+    real_features = tf.concat(results['real_features'], axis=0)
+    fake_features = tf.concat(results['fake_features'], axis=0)
 
     fid = _get_fid(real_features, fake_features)
     precision = _get_pr(real_features, fake_features)
     recall = _get_pr(fake_features, real_features)
 
-    return fid, precision, recall
+    latent_entropy = hp.latent_entropy_func(latent_scale_vector)
+
+    results = {'fid': fid, 'precision': precision, 'recall': recall,
+               'real_psnr': real_psnr, 'real_ssim': real_ssim, 'fake_psnr': fake_psnr, 'fake_ssim': fake_ssim,
+               'latent_entropy': latent_entropy}
+
+    for key in results:
+        print('%-20s:' % key, '%13.6f' % results[key].numpy())
+
+    return results
 
 
-def evaluate_fake_rec(generator: kr.Model, discriminator: kr.Model, test_dataset: tf.data.Dataset, latent_scale_vector):
-    average_psnr = []
-    average_ssim = []
-    for _ in test_dataset:
-        latent_vectors = hp.latent_dist_func([hp.batch_size, hp.latent_vector_dim])
-        fake_images = tf.clip_by_value(
-            generator(latent_vectors * latent_scale_vector, training=False),
-            clip_value_min=-1, clip_value_max=1)
-
-        _, rec_latent_vectors = discriminator(fake_images, training=False)
-        rec_images = tf.clip_by_value(
-            generator(rec_latent_vectors * latent_scale_vector, training=False),
-            clip_value_min=-1, clip_value_max=1)
-
-        average_psnr.append(tf.reduce_mean(tf.image.psnr(fake_images, rec_images, max_val=2.0)))
-        average_ssim.append(tf.reduce_mean(tf.image.ssim(fake_images, rec_images, max_val=2.0)))
-
-    return tf.reduce_mean(average_psnr), tf.reduce_mean(average_ssim)
 
 
-def evaluate_real_rec(generator: kr.Model, discriminator: kr.Model, test_dataset: tf.data.Dataset, latent_scale_vector):
-    average_psnr = []
-    average_ssim = []
-    for data in test_dataset:
-        real_images = Dataset.resize_and_normalize(data)
-        _, rec_latent_vectors = discriminator(real_images, training=False)
-        rec_images = tf.clip_by_value(
-            generator(rec_latent_vectors * latent_scale_vector, training=False),
-            clip_value_min=-1, clip_value_max=1)
 
-        average_psnr.append(tf.reduce_mean(tf.image.psnr(real_images, rec_images, max_val=2.0)))
-        average_ssim.append(tf.reduce_mean(tf.image.ssim(real_images, rec_images, max_val=2.0)))
-
-    return tf.reduce_mean(average_psnr), tf.reduce_mean(average_ssim)
 
