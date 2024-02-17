@@ -128,9 +128,9 @@ class Generator(kr.layers.Layer):
 
     def build(self, input_shape):
         ltn_vec = kr.Input([hp.ltn_dim])
-        ftr_maps = Dense(units=4 * 4 * 512, activation=activation)(ltn_vec)
+        ftr_vec = Dense(units=hp.ltn_dim * 2 + 8, activation=activation)(ltn_vec)
+        ftr_maps = Dense(units=4 * 4 * 512, activation=activation)(ftr_vec)
         ftr_maps = kr.layers.Reshape([4, 4, 512])(ftr_maps)
-        ftr_maps = Conv2D(filters=512, kernel_size=3, activation=activation)(ftr_maps)
         fake_img = Conv2D(filters=3, kernel_size=1, use_bias=False)(ftr_maps)
 
         for filters in reversed(filter_sizes):
@@ -162,6 +162,7 @@ class Discriminator(kr.layers.Layer):
             ftr_maps = BiasAct(activation=activation)(ftr_maps)
 
         ftr_vec = kr.layers.Flatten()(ftr_maps)
+        ftr_vec = Dense(units=hp.ltn_dim * 2 + 8, activation=activation)(ftr_vec)
         adv_val = Dense(units=1)(ftr_vec)[:, 0]
         ltn_vec = Dense(units=hp.ltn_dim)(ftr_vec)
         ltn_logvar = Dense(units=hp.ltn_dim)(ftr_vec)

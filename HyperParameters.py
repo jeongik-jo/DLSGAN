@@ -13,7 +13,7 @@ img_res = 256
 img_chn = 3
 ltn_dim = 1024
 
-reg_w = 3.0
+reg_w = 10.0
 g_enc_w = 1.0
 d_enc_w = 1.0
 use_logvar = False
